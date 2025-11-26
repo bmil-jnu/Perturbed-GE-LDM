@@ -3,7 +3,10 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
-from data.utils import StandardScaler
+try:
+    from data.utils import StandardScaler
+except ImportError:
+    from .utils import StandardScaler
 from scipy import sparse
 import scanpy as sc
 
@@ -38,9 +41,11 @@ class DrugDoseAnnDataset(Dataset):
         X = np.asarray(X, dtype=np.float32)
         if copy_X:
             X = X.copy()
+        np.nan_to_num(X, copy=False, nan=0.0, posinf=None, neginf=None)
         
         dose_vals = obs["dose"].to_numpy()
-        drug_mask = dose_vals != 0.0
+        control_vals = obs["control"].to_numpy()
+        drug_mask = control_vals == 0        # if control == 0, it's drug-treated sample
         self.drug_idx = np.flatnonzero(drug_mask)
         
         ctrl_keys = obs.loc[drug_mask, "paired_control_index"].to_numpy()

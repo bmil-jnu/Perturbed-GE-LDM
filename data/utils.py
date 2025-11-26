@@ -28,7 +28,6 @@ def train_valid_test(adata: AnnData, split_key="cov_drug_dose_name_split", sampl
     """
     Get train, valid, test adata based on the split key
     """
-    shuffled = shuffle_adata(adata)
     train_index = adata.obs[adata.obs[split_key] == "train"].index.tolist()
     valid_index = adata.obs[adata.obs[split_key] == "valid"].index.tolist()
     test_index = adata.obs[adata.obs[split_key] == "test"].index.tolist()
@@ -38,25 +37,25 @@ def train_valid_test(adata: AnnData, split_key="cov_drug_dose_name_split", sampl
         valid_index = np.random.choice(valid_index, size=3000, replace=False).tolist()
         test_index = np.random.choice(test_index, size=3000, replace=False).tolist()
     
-    control_index = adata.obs[adata.obs["dose"].astype(float) == 0.0].index.tolist()
+    control_index = adata.obs[adata.obs["control"] == 1].index.tolist()
 
     if len(train_index) > 0:
         train_index = train_index + control_index
-        train_adata = shuffled[train_index, :]
+        train_adata = adata[train_index, :]
     else:
         train_adata = None
     if len(valid_index) > 0:
         valid_index = valid_index + control_index
-        valid_adata = shuffled[valid_index, :]
+        valid_adata = adata[valid_index, :]
     else:
         valid_adata = None
     if len(test_index) > 0:
         test_index = test_index + control_index
-        test_adata = shuffled[test_index, :]
+        test_adata = adata[test_index, :]
     else:
         test_adata = None
 
-    return train_adata, valid_adata, test_adata
+    return train_adata, valid_adata, test_adata, len(control_index)
 
 
 def Drug_dose_encoder(drug_SMILES_list: list, dose_list: list, num_Bits=1024, comb_num=1):

@@ -16,12 +16,11 @@ class MoleculeModel(nn.Module):
         self.n_timesteps = timesteps        # 몇 번의 diffusion step을 수행할지 (noise를 몇 번 추가할지)
         self.device = args.device
         self.mode = args.mode
+        self.model_idx = args.model_idx
         
         self.latent_dim = 256
         
         self.ge_dim = ge_dim  # Gene expression dimension
-        
-        self.normalize_basal_gex_mean()   # basal gene expression data를 normalize
 
         self.register_buffer("betas", torch.linspace(1e-5, 0.01, self.n_timesteps))
         self.register_buffer("alphas", 1.0 - self.betas)
@@ -60,7 +59,6 @@ class MoleculeModel(nn.Module):
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         self.tokenizer = AutoTokenizer.from_pretrained("ibm/MoLFormer-XL-both-10pct", trust_remote_code=True)
 
-        # self.omics_conv1 = nn.Conv1d(in_channels=3, out_channels=1, kernel_size=1)
 
         self.mol_ffn = nn.Sequential(
             nn.Linear(768, 512),
@@ -77,19 +75,16 @@ class MoleculeModel(nn.Module):
         self.basal_ffn = nn.Sequential(
             nn.Linear(978, 512),
             nn.BatchNorm1d(512),
-            # nn.LayerNorm(512),
             nn.LeakyReLU(),
             nn.Dropout(0.2),
             
             nn.Linear(512, 512),
             nn.BatchNorm1d(512),
-            # nn.LayerNorm(512),
             nn.LeakyReLU(),
             nn.Dropout(0.2),
             
             nn.Linear(512, 256),
             nn.BatchNorm1d(256),
-            # nn.LayerNorm(256),
             nn.LeakyReLU(),
             nn.Dropout(0.2),
             
@@ -112,12 +107,10 @@ class MoleculeModel(nn.Module):
         self.context_encoder = nn.Sequential(
             nn.Linear(context_dim, 512),
             nn.BatchNorm1d(512),
-            # nn.LayerNorm(512),
             nn.LeakyReLU(),
             nn.Dropout(0.2),
             nn.Linear(512, 256),
             nn.BatchNorm1d(256),
-            # nn.LayerNorm(256),
             nn.LeakyReLU(),
             nn.Dropout(0.2),
             nn.Linear(256, 256),
@@ -133,46 +126,23 @@ class MoleculeModel(nn.Module):
         )
         
 
-    def normalize_basal_gex_mean(self):
-        """
-        Get the mean and standard deviation of the control gene expression data.
-
-        :param ctrl_gex: The control gene expression data.
-        :return: The mean and standard deviation of the control gene expression data.
-        """
-        self.ctrl_gex_df = pd.read_csv(
-            "../Data/LINCS_L1000/Data_PRnet/ctrl_gex_norm_log.csv", index_col=0
-        )
-        self.ctrl_gex_std, self.ctrl_gex_mean = torch.std_mean(torch.tensor(self.ctrl_gex_df.values, dtype=torch.float32), dim=0, unbiased=False)
-        self.ctrl_gex_std = self.ctrl_gex_std.to(self.device)
-        self.ctrl_gex_mean = self.ctrl_gex_mean.to(self.device)
-        
-        # Normalize the control gene expression data
-        self.ctrl_gex = torch.tensor(self.ctrl_gex_df.values, dtype=torch.float32)
-        self.ctrl_gex = self.ctrl_gex.to(self.device)
-        self.ctrl_gex = (self.ctrl_gex - self.ctrl_gex_mean) / self.ctrl_gex_std
-        self.cell_ids = list(self.ctrl_gex_df.index)  # e.g., ['A549', 'MCF7', ...]
-        
-        self.cell2idx = {cell_id: i for i, cell_id in enumerate(self.cell_ids)}
-
-
     def encode_context(self, basal_ge, smiles, dose, time):
         
         # Compound-specific features
         inputs = self.tokenizer(smiles, padding=True, return_tensors="pt").to(self.device)
         with torch.no_grad():
             mol_embedding = self.molformer(**inputs).pooler_output  # (B, 768)
-        mol_embedding = self.mol_ffn(mol_embedding)  # (B, 512)
+        mol_embedding = self.mol_ffn(mol_embedding)  # (B, 256)
         
         # Cell-specific features        
-        basal_ge = self.basal_ffn(basal_ge)  # (B, 512)
+        basal_ge = self.basal_ffn(basal_ge)  # (B, 256)
 
         # Condition features
-        dose = self.dose_ffn(dose.to(self.device))  # (B, 64)
-        time = self.time_ffn(time.to(self.device))  # (B, 64)
+        dose = self.dose_ffn(dose.to(self.device))  # (B, 32)
+        time = self.time_ffn(time.to(self.device))  # (B, 32)
 
         # Combine all features to form context vector
-        context = torch.cat([mol_embedding, basal_ge, time, dose, ], dim=1)  # (B, 512 + 512 + 64 + 64 ) = (B, 1234)
+        context = torch.cat([mol_embedding, basal_ge, time, dose], dim=1)  # (B, 256 + 256 + 32 + 32 = 576)
         
         context = context.to(self.device)
         return self.context_encoder(context)  # (B, hidden_dim)
@@ -212,7 +182,6 @@ class MoleculeModel(nn.Module):
             
         sigma = torch.exp(0.5 * log_var)
 
-        # sampling with noise (stochastic) or omit noise (DDIM-like deterministic)
         eps = torch.randn_like(mu)
         x_prev = mu + sigma * eps
 
@@ -299,30 +268,26 @@ class MoleculeModel(nn.Module):
                 z, mu, sigma, v, log_beta_t, log_beta_tilde = self.reverse_diffusion(z, basal_ge, smiles, dose, time, t_batch, save=save, count=count)
 
             if save:
+                SAVE_PATH = f'./checkpoints/fold_0/model_{self.model_idx}/{count}'
+                if not os.path.exists(f'{SAVE_PATH}'):
+                    os.makedirs(f'{SAVE_PATH}')
                 info_df = pd.DataFrame({
                     'cell': [c[0] for c in cell],
                     'smiles': smiles,
                     'dose': dose.cpu().numpy().reshape(-1),
                     'time': time.cpu().numpy().reshape(-1),
                 })
-                info_df.to_csv(f'./fold_1/{count}/info.csv', index=False)
+                info_df.to_csv(f'{SAVE_PATH}/info.csv', index=False)
                 
-                torch.save(init_z, f'./fold_1/{count}/init_z.pt')
+                torch.save(init_z, f'{SAVE_PATH}/init_z.pt')
                 if (steps.index(t) % 10 == 9) or steps.index(t) == 0:
                     print(f"Step {steps.index(t)}: t={t}, x={z.mean().item()}")
-                    if not os.path.exists(f'./fold_1/{count}'):
-                        os.makedirs(f'./fold_1/{count}')
-                    torch.save(z, f'./fold_1/{count}/step_{steps.index(t)}.pt')
+                    torch.save(z, f'{SAVE_PATH}/step_{steps.index(t)}.pt')
 
         if self.mode == "pred_mu_var":
             return z, mu, sigma,
         elif self.mode == "pred_mu_v":
             return z, mu, sigma, v, log_beta_t, log_beta_tilde
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 
 class Denoiser(nn.Module):
@@ -333,20 +298,16 @@ class Denoiser(nn.Module):
 
         self.fc1 = nn.Linear(latent_dim + context_dim + 128, hidden_dim)
         self.fc1_bn = nn.BatchNorm1d(hidden_dim)
-        # self.fc1_bn = nn.LayerNorm(hidden_dim)
         self.fc1_lrelu = nn.LeakyReLU()
         self.fc1_dropout = nn.Dropout(0.2)
         
         self.fc2 = nn.Linear(hidden_dim + context_dim, hidden_dim)
         self.fc2_bn = nn.BatchNorm1d(hidden_dim)
-        # self.fc2_bn = nn.LayerNorm(hidden_dim)
         self.fc2_lrelu = nn.LeakyReLU()
         self.fc2_dropout = nn.Dropout(0.2)
         
         self.fc3 = nn.Linear(hidden_dim + context_dim, hidden_dim)
-        # self.fc3 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3_bn = nn.BatchNorm1d(hidden_dim)
-        # self.fc3_bn = nn.LayerNorm(hidden_dim)
         self.fc3_lrelu = nn.LeakyReLU()
         self.fc3_dropout = nn.Dropout(0.2)
         

@@ -14,11 +14,15 @@ https://github.com/Perturbation-Response-Prediction/PRnet
 The IC50 data was downloaded from the GDSC2 website (https://www.cancerrxgene.org/).
 
 ## Requirements
-Please check the `requirements.txt` file for the full list of dependencies. The main dependencies are:  
+Please check the `environment.yaml` file for the full list of dependencies. The main dependencies are:  
 - python 3.12.7
 - pytorch 2.4.1
 - pytorch-cuda 12.4
 - transformers 4.51.3
+```
+conda env create -f environment.yaml
+conda activate pert_ldm
+```
 
 
 ## Train model

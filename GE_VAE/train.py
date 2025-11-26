@@ -19,14 +19,11 @@ import wandb
 from sklearn.metrics import r2_score, mean_squared_error, root_mean_squared_error
 
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
-os.environ['TORCH_USE_CUDA_DSA'] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
 
-# FILE_PATH = "../PRnet/dataset/Lincs_L1000.h5ad"
-# SPLIT = "drug_split"
-FILE_PATH = "../PRnet/dataset/Lincs_L1000_mywrite.h5ad"
+FILE_PATH = "../Lincs_L1000_mywrite_gene_fixed.h5ad"
 SPLIT = "mysplit"
 BATCH_SIZE = 1024
 KLD_WEIGHT = 10
@@ -41,7 +38,7 @@ scheduler_gamma = 0.99
 
 class GE_VAE_Trainer:
     def __init__(self):
-        
+
         self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
         self.adata = sc.read_h5ad(FILE_PATH)
@@ -58,8 +55,7 @@ class GE_VAE_Trainer:
     def make_k_fold_dataset(self, split_num):
 
         self.split_num = split_num
-        
-        # 데이터 분할 기준 컬럼명
+
         self.split_col = f"{SPLIT}_{split_num}"
 
         # create output directory
@@ -82,13 +78,25 @@ class GE_VAE_Trainer:
         test_dataset = GeneDataset(test_data)
 
         self.train_loader = DataLoader(
-            train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=16, pin_memory=True
+            train_dataset,
+            batch_size=BATCH_SIZE,
+            shuffle=True,
+            num_workers=16,
+            pin_memory=True,
         )
         self.valid_loader = DataLoader(
-            valid_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=16, pin_memory=True
+            valid_dataset,
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+            num_workers=16,
+            pin_memory=True,
         )
         self.test_loader = DataLoader(
-            test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=16, pin_memory=True
+            test_dataset,
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+            num_workers=16,
+            pin_memory=True,
         )
 
         print(
@@ -103,7 +111,7 @@ class GE_VAE_Trainer:
         self.patience_counter = 0
 
         model = GE_VAE(input_dim=978, latent_dim=LATENT_EMB_DIM)
-        
+
         model.to(self.device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -147,8 +155,7 @@ class GE_VAE_Trainer:
             summary(
                 model,
                 input_size=(BATCH_SIZE, 978),
-                col_names=["input_size", "output_size",
-                           "num_params", "trainable"],
+                col_names=["input_size", "output_size", "num_params", "trainable"],
                 depth=3,
             )
         )
@@ -209,7 +216,6 @@ class GE_VAE_Trainer:
                     + f"    Val PCCs: {val_pccs_row}\n"
                 )
 
-
                 # Early Stopping
                 if val_loss < self.best_val_loss:
                     self.best_val_loss = val_loss
@@ -247,7 +253,6 @@ class GE_VAE_Trainer:
                     "Validation/val_pccs_row": val_pccs_row,
                 }
             )
-
 
         print("Finished Training!")
 
@@ -289,7 +294,7 @@ class GE_VAE_Trainer:
             pcc = torch.corrcoef(torch.stack([input_gene, recon_gene]))[0, 1]
             pccs_gene.append(pcc.item())
         pccs_gene = np.mean(pccs_gene)
-        
+
         r2s_gene = []
         for i in range(all_inputs.shape[1]):
             input_gene = all_inputs[:, i]
@@ -369,27 +374,13 @@ class GE_VAE_Trainer:
 
         print(f"K-Fold CV Results after {k_fold_num} folds:")
 
-        print(
-            f"    Average RMSE: {np.mean(self.rmse_kfold_list):.4f} ± {np.std(self.rmse_kfold_list):.4f}"
-        )
-        print(
-            f"    Average MSE: {np.mean(self.mse_kfold_list):.4f} ± {np.std(self.mse_kfold_list):.4f}"
-        )
-        print(
-            f"    Average Test Loss: {np.mean(self.test_loss_kfold_list):.4f} ± {np.std(self.test_loss_kfold_list):.4f}"
-        )
-        print(
-            f"    Average PCC (gene): {np.mean(self.pccs_gene_kfold_list):.4f} ± {np.std(self.pccs_gene_kfold_list):.4f}"
-        )
-        print(
-            f"    Average R2 (gene): {np.mean(self.r2s_gene_kfold_list):.4f} ± {np.std(self.r2s_gene_kfold_list):.4f}"
-        )
-        print(
-            f"    Average PCC (row): {np.mean(self.pccs_row_kfold_list):.4f} ± {np.std(self.pccs_row_kfold_list):.4f}"
-        )
-        print(
-            f"    Average R2 (row): {np.mean(self.r2s_row_kfold_list):.4f} ± {np.std(self.r2s_row_kfold_list):.4f}"
-        )
+        print(f"    Average RMSE: {np.mean(self.rmse_kfold_list):.4f} ± {np.std(self.rmse_kfold_list):.4f}")
+        print(f"    Average MSE: {np.mean(self.mse_kfold_list):.4f} ± {np.std(self.mse_kfold_list):.4f}")
+        print(f"    Average Test Loss: {np.mean(self.test_loss_kfold_list):.4f} ± {np.std(self.test_loss_kfold_list):.4f}")
+        print(f"    Average PCC (gene): {np.mean(self.pccs_gene_kfold_list):.4f} ± {np.std(self.pccs_gene_kfold_list):.4f}")
+        print(f"    Average R2 (gene): {np.mean(self.r2s_gene_kfold_list):.4f} ± {np.std(self.r2s_gene_kfold_list):.4f}")
+        print(f"    Average PCC (row): {np.mean(self.pccs_row_kfold_list):.4f} ± {np.std(self.pccs_row_kfold_list):.4f}")
+        print(f"    Average R2 (row): {np.mean(self.r2s_row_kfold_list):.4f} ± {np.std(self.r2s_row_kfold_list):.4f}")
 
 
 if __name__ == "__main__":

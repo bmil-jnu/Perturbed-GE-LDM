@@ -27,28 +27,18 @@ from transformers import (
     get_cosine_schedule_with_warmup,
     get_polynomial_decay_schedule_with_warmup,
 )
-from GE_VAE.VAE_model import GE_VAE
+from GE_VAE.model import GE_VAE
 
 import wandb
+import datetime
 
 from data.Dataset import DrugDoseAnnDataset
 
 
 
 
-def setup(rank, world_size):
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12356"
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    torch.cuda.set_device(rank)
 
-
-def cleanup():
-    dist.barrier()
-    dist.destroy_process_group()
-
-
-def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
+def run_training(args, data, logger: Logger = None, split_key: str = None) -> Dict[str, List[float]]:
     """
     Loads data, trains a model, and returns test scores for the model checkpoint with the highest validation score.
 
@@ -62,11 +52,11 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
 
     debug = info = print
 
-
     # Initialize distributed training
     rank = args.rank
     world_size = args.world_size
-    setup(rank, world_size)
+    if args.parallel:
+        setup(rank, world_size)
 
     # Set model index
     if os.path.exists(args.save_dir):
@@ -79,6 +69,9 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
     else:
         model_idx = 0
         
+    args.restart_from_checkpoint = False
+    args.model_idx = model_idx
+    
     # Save file names
     MODEL_FILE_NAME = "model.pt"
 
@@ -92,7 +85,7 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
             "args": vars(args),
         }
     )
-    if dist.get_rank() != 0:  # Only log from rank 0
+    if args.parallel and dist.get_rank() != 0:  # Only log from rank 0
         wandb.log = debug
 
     # Get loss function
@@ -108,35 +101,39 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
     valid_dataset = DrugDoseAnnDataset(valid_adata, obs_key=args.obs_key)
     test_dataset = DrugDoseAnnDataset(test_adata, obs_key=args.obs_key)
 
-    # debug("Fitting targets scaler for train_data")
-    # scaler = train_dataset.normalize_targets()
-    # valid_dataset.set_targets(scaler.transform(valid_dataset.data))
-    # test_dataset.set_targets(scaler.transform(test_dataset.data))
     scaler = None
 
-    train_sampler = DistributedSampler(
-        dataset=train_dataset,
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=True,
-        seed=args.seed,
-    )
-    valid_sampler = DistributedSampler(
-        dataset=valid_dataset,
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=False,
-        seed=args.seed,
-    )
-
-    train_dataloader = DataLoader(
-        train_dataset, sampler=train_sampler, batch_size=args.batch_size, num_workers=4, pin_memory=True,
-    )
-    valid_dataloader = DataLoader(
-        valid_dataset, sampler=valid_sampler, batch_size=args.batch_size, num_workers=4, pin_memory=True,
-    )
+    if args.parallel:
+        train_sampler = DistributedSampler(
+            dataset=train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            seed=args.seed,
+        )
+        valid_sampler = DistributedSampler(
+            dataset=valid_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            seed=args.seed,
+        )
+        train_dataloader = DataLoader(
+            train_dataset, sampler=train_sampler, batch_size=args.batch_size, num_workers=8, pin_memory=True,
+        )
+        valid_dataloader = DataLoader(
+            valid_dataset, sampler=valid_sampler, batch_size=args.batch_size, num_workers=8, pin_memory=True,
+        )
+    else:
+        train_dataloader = DataLoader(
+            train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True,
+        )
+        valid_dataloader = DataLoader(
+            valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True,
+        )
+        
     test_dataloader = DataLoader(
-        test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True,
+        test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True,
     )
 
     print("train_data_loader[0]:", train_dataloader.dataset.smiles_list[0])
@@ -173,15 +170,6 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
 
     # Learning rate schedulers
     scheduler = build_lr_scheduler(optimizer, args)
-    # import math
-    # steps_per_epoch = math.ceil(len(train_dataloader) / (world_size))
-    # total_steps = args.epochs * steps_per_epoch  # epochs=500
-    # warmup_steps = min(5000, int(0.03 * total_steps))
-    # scheduler = get_cosine_schedule_with_warmup(
-    #     optimizer,
-    #     num_warmup_steps=warmup_steps,
-    #     num_training_steps=total_steps
-    # )
     wandb.config.update(
         {
             "scheduler": scheduler.__class__.__name__,
@@ -189,19 +177,29 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
         }
     )
     
-    # Ensure that model is saved in correct location for evaluation if 0 epochs
-    save_checkpoint(os.path.join(save_dir, MODEL_FILE_NAME), model, scaler, args, optimizer, scheduler, epoch=0)
-
     # Run training
     EARLY_STOP_CRITERION = args.early_stop_criterion
     early_stop_count = 0
     best_score = -float("inf")
     best_epoch, n_iter = 0, 0
-
+    
+    
+    if args.restart_from_checkpoint:
+        debug("Restarting from checkpoint...")
+        model, scaler, optimizer, scheduler, start_epoch, best_score, early_stop_count = load_checkpoint(
+            os.path.join(save_dir, MODEL_FILE_NAME), model, scaler, optimizer, scheduler, args.device, logger=logger
+        )
+        debug(f"Resumed from epoch {start_epoch}, best_score {best_score}, early_stop_count {early_stop_count}")
+    else:
+        # Ensure that model is saved in correct location for evaluation if 0 epochs
+        save_checkpoint(
+                        os.path.join(save_dir, MODEL_FILE_NAME), model, scaler, args, optimizer, scheduler, 0, best_score, early_stop_count
+                    )
+        
     # Load VAE model
     debug("Loading GE_VAE model...")
     LATENT_EMB_DIM = 256  # Set the latent dimension size for the VAE
-    ge_vae_path = "./GE_VAE/checkpoints/best_vae_no_meanlog.pt"
+    ge_vae_path = "./GE_VAE/checkpoints/best_vae.pt"
     wandb.config.update(
         {
             "vae_path": ge_vae_path,
@@ -218,11 +216,16 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
     for param in ge_vae.parameters():
         param.requires_grad = False
 
+    model.train()
+    ge_vae.eval()
+
     for epoch in trange(args.epochs):
         debug(f"Epoch {epoch}")
         wandb.log({"Epoch": epoch})
 
         if args.parallel:
+            if args.restart_from_checkpoint and epoch == 0:
+                epoch = start_epoch      
             train_dataloader.sampler.set_epoch(epoch)  # Shuffle data at each epoch
             valid_dataloader.sampler.set_epoch(epoch)
 
@@ -236,10 +239,8 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
             args=args,
             n_iter=n_iter,
             logger=logger,
+            epoch=epoch,
         )
-
-        if isinstance(scheduler, ExponentialLR):
-            scheduler.step()
 
         val_scores_all_ranks, _ = predict(
             model=model,
@@ -253,6 +254,7 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
 
         args.metric = "avg_gene_pearson"
 
+        early_stop_flag = torch.tensor(0, device=args.device)
         # Save model checkpoint if improved validation score
         if not dist.is_initialized() or dist.get_rank() == 0:
             cov_drug_list = valid_dataset.obs_list
@@ -268,7 +270,7 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
                 best_score, best_epoch = mean_val_score, epoch
                 early_stop_count = 0
                 save_checkpoint(
-                    os.path.join(save_dir, MODEL_FILE_NAME), model, scaler, args, optimizer, scheduler, epoch=epoch
+                    os.path.join(save_dir, MODEL_FILE_NAME), model, scaler, args, optimizer, scheduler, epoch, best_score, early_stop_count
                 )
             else:
                 early_stop_count += 1
@@ -276,23 +278,30 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
                     f"No improvement on validation {args.metric} for {early_stop_count} epochs."
                 )
                 if early_stop_count >= EARLY_STOP_CRITERION:
-                    break
+                    # break
+                    early_stop_flag += 1
 
+        if dist.is_initialized():
+            dist.broadcast(early_stop_flag, src=0)
+            
+        if early_stop_flag.item()  == 1:
+            break
+        
     if dist.is_initialized():
         rank = dist.get_rank()
         dist_enabled = True
+        cleanup()
+        print(f"Finished running basic DDP example on rank {rank}.")
     else:
-        rank = 0
+        rank = 2
         dist_enabled = False
 
-    cleanup()
-    print(f"Finished running basic DDP example on rank {rank}.")
 
     # Evaluate on test set using model with best validation score
     info(
         f"Model {model_idx} best validation {args.metric} = {best_score:.6f} on epoch {best_epoch}"
     )
-    model, scaler = load_checkpoint(
+    model, scaler = load_checkpoint_for_test(
         os.path.join(save_dir, MODEL_FILE_NAME), device=args.device, logger=logger
     )
 
@@ -309,12 +318,18 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
             dist_enabled=dist_enabled,
         )
 
+
     # Save scores
+    save_dir = os.path.join(save_dir, split_key)
+    makedirs(save_dir)
+    
     with open(os.path.join(save_dir, "test_scores.json"), "w") as f:
         json.dump(str(test_scores), f, indent=4, sort_keys=True)
 
-    with open(save_dir + args.split_key + "_cov_drug_array.csv", "a+") as f:
-        for i in cov_drug_list:
+    test_cov_drug_list = test_dataset.obs_list
+
+    with open(os.path.join(save_dir, 'cov_drug_array.csv'), "a+") as f:
+        for i in test_cov_drug_list:
             f.write(i + "\n")
 
     # Optionally save test preds
@@ -323,8 +338,8 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
             data={
                 "smiles": test_dataset.smiles_list,
                 "cell_id": test_dataset.obs_list,
-                "dose": test_dataset.dose_list,
-                "time": test_dataset.time_list,
+                "dose": test_dataset.dose_tensor.view(-1).tolist(),
+                "time": test_dataset.time_tensor.view(-1).tolist(),
             }
         )
 
@@ -340,8 +355,20 @@ def run_training(args, data, logger: Logger = None) -> Dict[str, List[float]]:
             [test_preds_dataframe.reset_index(drop=True), value_df], axis=1
         )
 
-        test_preds_dataframe.to_csv(
-            os.path.join(save_dir, "test_preds.csv"), index=False
+        try:
+            test_preds_dataframe.to_csv(
+                os.path.join(save_dir, "test_preds.csv"), index=False
+            )
+        except Exception as e:
+            debug(f"Warning: Could not save test predictions to CSV due to {e}.")
+            test_preds.to_csv(
+                'test_preds.csv', index=False
+            )
+            
+        test_truth = test_dataset.data.numpy()
+        test_truth_df = pd.DataFrame(data=test_truth, columns=args.task_names)
+        test_truth_df.to_csv(
+            os.path.join(save_dir, "test_truth.csv"), index=False
         )
 
     return test_scores

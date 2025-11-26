@@ -1,14 +1,10 @@
 from collections import defaultdict
-import csv
-import json
 from logging import Logger
 import os
 import sys
-from typing import Callable, Dict, List, Tuple
 import subprocess
 
 import numpy as np
-import pandas as pd
 import torch
 from run_training import run_training
 from args import TrainArgs
@@ -36,7 +32,7 @@ def cross_validate(rank, world_size, train_func, parallel=True):
     arguments = [
         '--epochs', '200',
         '--dataset_type', 'regression',
-        '--data_path', '/home/chaewon215/research/PRnet/dataset/Lincs_L1000.h5ad',
+        '--data_path', './Lincs_L1000_mywrite_gene_fixed.h5ad',
         '--save_dir', 'checkpoints',
         '--comp_embed_model', 'molformer',
         '--metric', 'avg_gene_pearson',
@@ -44,23 +40,26 @@ def cross_validate(rank, world_size, train_func, parallel=True):
 
     args = TrainArgs().parse_args(arguments)
     
-    args.split_keys = ['drug_split_4']
+    args.split_keys = ['4foldcv_0']
+    
     args.rank = rank
     args.world_size = world_size
-    args.batch_size = 128 * world_size
-    args.loss_function = 'hybrid_loss'
+    args.batch_size = 256 * world_size
+    args.loss_function = 'variational_loss' # 'variational_loss' or 'hybrid_loss' or 'mse_loss'
     args.lambda_kl = 0.001
     args.parallel = parallel
     
     args.save_smiles_splits = False
     args.save_preds = True
     args.train_data_size = 0
+    args.data_sample = False
+    args.save_intermediate = False
     
     args.mode = 'pred_mu_v' # 'pred_mu_var' or 'pred_mu_v'
     
     
     if not args.parallel:
-        args.device = torch.device('cuda', 0)
+        args.device = torch.device('cuda', 2)
     else:
         args.device = torch.device('cuda', rank)
 
@@ -112,11 +111,11 @@ def cross_validate(rank, world_size, train_func, parallel=True):
         args.save_dir = os.path.join(save_dir, f'fold_{index}')
         makedirs(args.save_dir)
 
-        train_adata, valid_adata, test_adata = train_valid_test(adata, split_key=split_key, sample=True)
-        debug(f'Number of data points = {len(adata)}')
-        debug(f'--- Training data points = {len(train_adata)}')
-        debug(f'--- Validation data points = {len(valid_adata)}')
-        debug(f'--- Test data points = {len(test_adata)}')
+        train_adata, valid_adata, test_adata, ctrl_len = train_valid_test(adata, split_key=split_key, sample=args.data_sample)
+        debug(f'Number of data points = {len(train_adata) + len(valid_adata) + len(test_adata) - 3 * ctrl_len}')
+        debug(f'--- Training data points = {len(train_adata) - ctrl_len}')
+        debug(f'--- Validation data points = {len(valid_adata) - ctrl_len}')
+        debug(f'--- Test data points = {len(test_adata) - ctrl_len}')
         
         debug(f'Number of tasks = {args.num_tasks}')
         
@@ -128,7 +127,7 @@ def cross_validate(rank, world_size, train_func, parallel=True):
             'test': test_adata
             }
         
-        model_scores = train_func(args, data, logger)
+        model_scores = train_func(args, data, logger, split_key)
 
 
         for metric, scores in model_scores.items():

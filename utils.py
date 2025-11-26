@@ -1,15 +1,18 @@
 from argparse import Namespace
+
+import datetime
 from datetime import timedelta
 from functools import wraps
 import logging
 import os
 from time import time
 import random
-from typing import Any, Callable, List, Tuple, Union
+from typing import Any, Callable, List, Tuple, Union, Optional
+import numpy as np
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
-import numpy as np
 from torch.optim import Adam, Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 
@@ -31,7 +34,22 @@ def set_seed(seed):
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    
+
+
+def setup(rank, world_size):
+
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12356"
+    dist.init_process_group(
+        "nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(days=2)
+    )
+    torch.cuda.set_device(rank)
+
+
+def cleanup():
+    dist.barrier()
+    dist.destroy_process_group()
+
 
 def makedirs(path: str, isfile: bool = False) -> None:
     """
@@ -51,36 +69,137 @@ def makedirs(path: str, isfile: bool = False) -> None:
 
 def save_checkpoint(
     path: str,
-    model: MoleculeModel,
-    scaler: StandardScaler = None,
-    args: TrainArgs = None,
-    optimizer: Optimizer = None,
-    scheduler: _LRScheduler = None,
-    epoch: int = None,
+    model: torch.nn.Module,
+    scaler: Optional[StandardScaler] = None,
+    args: Optional[TrainArgs] = None,
+    optimizer: Optional[Optimizer] = None,
+    scheduler: Optional[_LRScheduler] = None,
+    epoch: Optional[int] = None,
+    best_score: Optional[float] = None,
+    early_stop_count: Optional[int] = None,
 ) -> None:
-    """
-    Saves a model checkpoint.
-
-    :param model: A :class:`~chemprop.models.model.MoleculeModel`.
-    :param scaler: A :class:`~chemprop.data.scaler.StandardScaler` fitted on the data.
-    :param args: The :class:`~chemprop.args.TrainArgs` object containing the arguments the model was trained with.
-    :param path: Path where checkpoint will be saved.
-    """
-
     if args is not None:
         args = Namespace(**args.as_dict())
-    data_scaler = (
-        {"means": scaler.means, "stds": scaler.stds} if scaler is not None else None
-    )
+
+    data_scaler = {"means": scaler.means, "stds": scaler.stds} if scaler else None
+
     state = {
         "args": args,
         "state_dict": model.state_dict(),
         "data_scaler": data_scaler,
+        "optimizer": optimizer.state_dict() if optimizer else None,
+        "scheduler": scheduler.state_dict() if scheduler else None,
+        "epoch": epoch,
+        "best_score": best_score,
+        "early_stop_count": early_stop_count,
+        "random_state": {
+            "torch": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state_all(),
+            "numpy": np.random.get_state(),
+            "random": random.getstate(),
+        },
     }
     torch.save(state, path)
 
 
 def load_checkpoint(
+    path: str,
+    model: torch.nn.Module,
+    scaler: Optional[StandardScaler] = None,
+    optimizer: Optional[Optimizer] = None,
+    scheduler: Optional[_LRScheduler] = None,
+    device: Union[torch.device, str] = "cpu",
+    logger: logging.Logger = None,
+) -> Tuple[
+    torch.nn.Module,
+    Optional[StandardScaler],
+    Optional[Optimizer],
+    Optional[_LRScheduler],
+    int,
+    Optional[float],
+    Optional[int],
+]:
+    """
+    Loads a model checkpoint.
+
+    :param path: Path where checkpoint is saved.
+    :param model: The model to load the checkpoint into.
+    :param scaler: The data scaler to load the checkpoint into.
+    :param optimizer: The optimizer to load the checkpoint into.
+    :param scheduler: The learning rate scheduler to load the checkpoint into.
+    :param device: Device where the model will be moved.
+    :param logger: A logger for recording output.
+    :return: The loaded model, scaler, optimizer, scheduler, epoch, best score, and early stop count.
+    """
+    if logger is not None:
+        debug, info = logger.debug, logger.info
+    else:
+        debug = info = print
+
+    # Load model and args
+    state = torch.load(
+        path, map_location=lambda storage, loc: storage, weights_only=False
+    )
+
+    args = TrainArgs()
+    args.from_dict(vars(state["args"]), skip_unsettable=True)
+    loaded_state_dict = state["state_dict"]
+
+    if device is not None:
+        args.device = device
+
+    # Load pretrained weights
+    model_state_dict = model.state_dict()
+
+    for key in list(loaded_state_dict.keys()):
+        if (
+            key not in model_state_dict
+            or loaded_state_dict[key].shape != model_state_dict[key].shape
+        ):
+            info(
+                f'Warning: Pretrained parameter "{key}" cannot be loaded due to size mismatch or missing key.'
+            )
+            loaded_state_dict.pop(key)
+
+    # Load pretrained weights
+    model_state_dict.update(loaded_state_dict)
+    model.load_state_dict(model_state_dict)
+
+    if args.cuda:
+        debug("Moving model to cuda")
+    model = model.to(args.device)
+
+    # Load scaler
+    if scaler is not None and state["data_scaler"] is not None:
+        scaler.means = state["data_scaler"]["means"]
+        scaler.stds = state["data_scaler"]["stds"]
+
+    # Load optimizer
+    if optimizer is not None and state["optimizer"] is not None:
+        optimizer.load_state_dict(state["optimizer"])
+
+    # Load scheduler
+    if scheduler is not None and state["scheduler"] is not None:
+        scheduler.load_state_dict(state["scheduler"])
+    # Load random state for reproducibility
+    if "random_state" in state:
+        random_state = state["random_state"]
+        torch.set_rng_state(random_state["torch"])
+        torch.cuda.set_rng_state_all(random_state["cuda"])
+        np.random.set_state(random_state["numpy"])
+        random.setstate(random_state["random"])
+    return (
+        model,
+        scaler,
+        optimizer,
+        scheduler,
+        state.get("epoch", 0),
+        state.get("best_score", None),
+        state.get("early_stop_count", None),
+    )
+
+
+def load_checkpoint_for_test(
     path: str, device: torch.device = None, logger: logging.Logger = None
 ) -> MoleculeModel:
     """
@@ -282,4 +401,3 @@ def r2_mean(data1, data2):
         r2_score_ = r2_score(data1[i], data2[i])
         sum_r2_1 += r2_score_
     return sum_r2_1 / data1.shape[0]
-

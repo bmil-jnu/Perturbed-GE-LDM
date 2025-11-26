@@ -1,9 +1,8 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# 1. Gene Expression Variational Autoencoder (GE_VAE)
+
 class ResidualBlock(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -73,4 +72,3 @@ class GE_VAE(nn.Module):
         z, mu, logvar = self.encode(x)
         recon = self.decode(z)
         return recon, x, mu, logvar
-
