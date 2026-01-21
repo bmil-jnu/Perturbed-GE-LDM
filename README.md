@@ -47,7 +47,7 @@ pip install -r requirements.txt
 
 ---
 
-## Dataset
+## Dataset and Checkpoints
 
 ### LINCS L1000
 
@@ -55,14 +55,24 @@ The original L1000 dataset for drug-induced transcriptional profiles is availabl
 
 In this study, we further processed the data provided by [PRnet](https://github.com/Perturbation-Response-Prediction/PRnet).
 
-📥 **Download the processed data**: [Google Drive](https://drive.google.com/your-link-here)
+📥 **Download the processed data**: [Google Drive](https://drive.google.com/file/d/1Su6RZWbxS961ZpFxH4qU9tjth2IPxXsO/view?usp=sharing)
 
-### Data Structure
+### Pretrained Model
 
-Place the preprocessed data file in the root directory:
+📥 **Download the pretrained LDM checkpoint**: [Google Drive](https://drive.google.com/file/d/1MBQi7eMlwe7ZICKxLw6aiF1G8KQQlFv6/view?usp=sharing)
+
+Place the downloaded file at `checkpoints/ldm/best_ldm.pt`.
+
+### File Structure
+
+Place the preprocessed data in the root directory, and the checkpoint in the `checkpoints/ldm/` directory:
+
 ```
 Perturbed-GE-LDM/
-└── Lincs_L1000.h5ad
+├── Lincs_L1000.h5ad
+└── checkpoints/
+    └── ldm/
+        └── best_ldm.pt  # Download from Google Drive
 ```
 
 ---
@@ -142,7 +152,7 @@ data:
   split_keys: [4foldcv_0, 4foldcv_1, 4foldcv_2, 4foldcv_3]
 ```
 
----
+<!-- ---
 
 ## Citation
 
@@ -155,7 +165,7 @@ If you find this work useful, please cite:
   journal={},
   year={2025}
 }
-```
+``` -->
 
 ---
 
