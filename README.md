@@ -1,39 +1,165 @@
 # Perturbed-GE-LDM
 
-Title: **Predicting Drug-Induced Transcriptional Responses Using Latent Diffusion Model**
+**Predicting Condition-Aware Drug-Induced Transcriptional Responses via a Latent Diffusion Model**
 
-Author: ***Chaewon Kim, Sunyong Yoo***
+**Chaewon Kim, Sunyong Yoo**
 
-## Datasets
-### LINCS L1000 for drug-induced transcriptional profiles
-The L1000 was downloaded from the Gene Expression Omnibus with the accession number ([GSE92742](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE92742)).  
-You can also access the preprocessed LINCS L1000 data through the PRnet repository:  
-https://github.com/Perturbation-Response-Prediction/PRnet
+---
 
-### IC50 data for drug sensitivity
-The IC50 data was downloaded from the GDSC2 website (https://www.cancerrxgene.org/).
+## Overview
 
-## Requirements
-Please check the `environment.yaml` file for the full list of dependencies. The main dependencies are:  
-- python 3.12.7
-- pytorch 2.4.1
-- pytorch-cuda 12.4
-- transformers 4.51.3
-```
+This repository contains the official implementation of a **Latent Diffusion Model (LDM)** for predicting drug-induced gene expression changes. The model takes basal gene expression, molecular structure (SMILES), dose, and treatment time as conditions to predict perturbed transcriptional responses.
+
+<p align="center">
+  <img src="./figure/model_architecture.jpg" width="80%" alt="Model Architecture">
+</p>
+
+## Key Features
+
+- **Conditional Latent Diffusion**: Generates perturbed gene expression in VAE latent space
+- **Multi-condition Support**: Incorporates cell type, drug structure, dose, and time
+- **MolFormer Integration**: Uses pretrained molecular embeddings for drug representation
+- **Distributed Training**: Supports multi-GPU training with PyTorch DDP
+
+---
+
+## Installation
+
+### Requirements
+
+- Python >= 3.10
+- PyTorch >= 2.0
+- CUDA >= 12.0
+
+### Setup
+
+```bash
+git clone https://github.com/your-username/Perturbed-GE-LDM.git
+cd Perturbed-GE-LDM
+
+# Create conda environment
 conda env create -f environment.yaml
-conda activate pert_ldm
+conda activate ldm_lincs
+
+# Or install via pip
+pip install -r requirements.txt
 ```
 
+---
 
-## Train model
-- `train_model.py` trains the Latent Diffusion Model for drug-induced transcriptional response prediction.
-- This code is based on PyTorch Data Distributed Processing (DDP) and supports multi-GPU usage.
+## Dataset
+
+### LINCS L1000
+
+The original L1000 dataset for drug-induced transcriptional profiles is available from Gene Expression Omnibus: [GSE92742](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE92742)
+
+In this study, we further processed the data provided by [PRnet](https://github.com/Perturbation-Response-Prediction/PRnet).
+
+📥 **Download the processed data**: [Google Drive](https://drive.google.com/your-link-here)
+
+### Data Structure
+
+Place the preprocessed data file in the root directory:
 ```
-python train_model.py
+Perturbed-GE-LDM/
+└── Lincs_L1000.h5ad
 ```
 
-## Note
-All of the code will be updated soon.
+---
+
+## Usage
+
+### Training
+
+```bash
+# Basic training
+python main.py train --config configs/base.yaml
+
+# With custom parameters
+python main.py train --epochs 200 --batch_size 512 --lr 1e-3
+
+# Distributed training (multi-GPU)
+python main.py train --parallel --world_size 4
+```
+
+### Evaluation
+
+```bash
+# Evaluate trained model
+python main.py eval --checkpoint checkpoints/ldm/best_ldm.pt
+```
+
+### Prediction
+
+```bash
+# Generate predictions
+python main.py predict --checkpoint checkpoints/ldm/best_ldm.pt --output predictions.csv
+```
+
+---
+
+## Project Structure
+
+```
+Perturbed-GE-LDM/
+├── main.py                 # Single entry point
+├── Lincs_L1000.h5ad        # Data file
+├── configs/                # Configuration files
+│   ├── config.py           # Config dataclasses
+│   └── base.yaml           # Default settings
+├── checkpoints/            # Model checkpoints
+│   ├── ldm/                # Diffusion model
+│   └── vae/                # VAE encoder/decoder
+├── cache/                  # Cached embeddings
+├── src/                    # Source code
+│   ├── data/               # Data loading
+│   ├── models/             # Model architectures
+│   ├── training/           # Training utilities
+│   ├── evaluation/         # Evaluation metrics
+│   └── utils/              # General utilities
+└── scripts/                # Shell scripts
+```
+
+---
+
+## Configuration
+
+Modify `configs/base.yaml` to customize training:
+
+```yaml
+model:
+  timesteps: 1000
+  beta_schedule: linear
+  latent_dim: 256
+
+training:
+  epochs: 200
+  batch_size: 256
+  max_lr: 0.001
+
+data:
+  data_path: ./Lincs_L1000.h5ad
+  split_keys: [4foldcv_0, 4foldcv_1, 4foldcv_2, 4foldcv_3]
+```
+
+---
+
+## Citation
+
+If you find this work useful, please cite:
+
+```bibtex
+@article{kim2025predicting,
+  title={Predicting Condition-Aware Drug-Induced Transcriptional Responses via a Latent Diffusion Model},
+  author={Kim, Chaewon and Yoo, Sunyong},
+  journal={},
+  year={2025}
+}
+```
+
+---
 
 ## Contact
-For any questions, please open a GitHub issue or email to chaewonk215@gmail.com.
+
+For questions or issues, please open a GitHub issue or contact:
+- Chaewon Kim: chaewonk215@gmail.com
