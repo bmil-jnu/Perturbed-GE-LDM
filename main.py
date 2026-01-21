@@ -37,7 +37,7 @@ import torch.multiprocessing as mp
 # Add src to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.configs import ExperimentConfig, load_config
+from configs import ExperimentConfig, load_config
 from src.data import LINCSDataModule
 from src.models import ModelFactory
 from src.training import Trainer, DistributedManager, get_loss_func, build_optimizer_and_scheduler

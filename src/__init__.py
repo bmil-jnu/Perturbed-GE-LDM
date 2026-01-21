@@ -17,7 +17,7 @@ __version__ = "1.0.0"
 __author__ = "LDM-LINCS Team"
 
 # Convenience imports
-from .configs import ExperimentConfig, load_config
+from configs import ExperimentConfig, load_config
 from .data import LINCSDataModule
 from .models import ModelFactory, LatentDiffusionModel, GE_VAE
 from .training import Trainer
