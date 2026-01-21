@@ -149,7 +149,7 @@ training:
 
 data:
   data_path: ./Lincs_L1000.h5ad
-  split_keys: [4foldcv_0, 4foldcv_1, 4foldcv_2, 4foldcv_3]
+  split_keys: [4foldcv_0, 4foldcv_1, 4foldcv_2, 4foldcv_3, 4foldcv_cell_0, 4foldcv_cell_1, 4foldcv_cell_2, 4foldcv_cell_3]
 ```
 
 <!-- ---
