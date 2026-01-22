@@ -1,0 +1,87 @@
+# LDM-LINCS Base Configuration
+# This is the default configuration file for training and evaluation
+
+experiment_name: ldm_lincs
+save_dir: ./checkpoints
+mode: train  # train, eval, or predict
+
+# Device settings
+device: cuda
+cuda: true
+
+# Logging
+quiet: false
+use_wandb: true
+wandb_project: LDM
+
+# Model Configuration
+model:
+  timesteps: 1000
+  beta_schedule: linear  # cosine or linear
+  n_steps: 50
+  mode: pred_mu_v  # pred_mu_var or pred_mu_v
+  
+  latent_dim: 256
+  hidden_dim: 512
+  context_dim: 576
+  ge_dim: 978
+  
+  comp_embed_model: molformer
+  
+  # Checkpoint paths
+  ldm_path: ./checkpoints/ldm/best_ldm.pt
+  vae_path: ./checkpoints/vae/best_vae.pt
+  vae_latent_dim: 256
+
+# Training Configuration
+training:
+  epochs: 200
+  batch_size: 256
+  seed: 0
+  
+  # Learning rate
+  init_lr: 0.0001
+  max_lr: 0.001
+  final_lr: 0.0001
+  warmup_epochs: 2
+  
+  # Loss
+  loss_function: variational_loss  # mse, variational_loss, or hybrid_loss
+  lambda_kl: 0.0001
+  
+  # Regularization
+  grad_clip: null
+  
+  # Early stopping
+  early_stop_patience: 30
+  metric: avg_gene_pearson
+  
+  # Distributed
+  parallel: false
+  
+  # Saving
+  save_intermediate: false
+  save_preds: true
+  restart_from_checkpoint: false
+
+# Data Configuration
+data:
+  data_path: ./Lincs_L1000.h5ad
+  cache_dir: ./cache
+  
+  split_keys:
+    - 4foldcv_0
+    - 4foldcv_1
+    - 4foldcv_2
+    - 4foldcv_3
+    - 4foldcv_cell_0
+    - 4foldcv_cell_1
+    - 4foldcv_cell_2
+    - 4foldcv_cell_3
+  
+  obs_key: cov_drug_name
+  data_sample: false
+  sample_size: null
+  
+  num_workers: 8
+  pin_memory: true
