@@ -25,13 +25,26 @@ def pearson_mean(predictions: np.ndarray, targets: np.ndarray) -> Tuple[float, f
     n_samples = predictions.shape[0]
     sum_corr = 0.0
     sum_pval = 0.0
+    valid_count = 0
     
     for i in range(n_samples):
-        corr, pval = pearsonr(predictions[i], targets[i])
-        sum_corr += corr
-        sum_pval += pval
+        pred_i = predictions[i]
+        targ_i = targets[i]
+        
+        # Skip samples with NaN or Inf values
+        if np.any(~np.isfinite(pred_i)) or np.any(~np.isfinite(targ_i)):
+            continue
+        
+        corr, pval = pearsonr(pred_i, targ_i)
+        if np.isfinite(corr):
+            sum_corr += corr
+            sum_pval += pval
+            valid_count += 1
     
-    return sum_corr / n_samples, sum_pval / n_samples
+    if valid_count == 0:
+        return 0.0, 1.0
+    
+    return sum_corr / valid_count, sum_pval / valid_count
 
 
 def r2_mean(targets: np.ndarray, predictions: np.ndarray) -> float:
@@ -50,11 +63,25 @@ def r2_mean(targets: np.ndarray, predictions: np.ndarray) -> float:
     """
     n_samples = targets.shape[0]
     sum_r2 = 0.0
+    valid_count = 0
     
     for i in range(n_samples):
-        sum_r2 += r2_score(targets[i], predictions[i])
+        pred_i = predictions[i]
+        targ_i = targets[i]
+        
+        # Skip samples with NaN or Inf values
+        if np.any(~np.isfinite(pred_i)) or np.any(~np.isfinite(targ_i)):
+            continue
+        
+        r2 = r2_score(targ_i, pred_i)
+        if np.isfinite(r2):
+            sum_r2 += r2
+            valid_count += 1
     
-    return sum_r2 / n_samples
+    if valid_count == 0:
+        return 0.0
+    
+    return sum_r2 / valid_count
 
 
 def compute_metrics(

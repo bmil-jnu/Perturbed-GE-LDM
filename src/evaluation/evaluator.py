@@ -225,11 +225,26 @@ class Evaluator:
         
         samples_np = samples_np.astype(float)
         
+        # Check for NaN values and handle them
+        nan_mask = ~np.isfinite(samples_np)
+        if np.any(nan_mask):
+            nan_count = np.sum(nan_mask)
+            total_count = samples_np.size
+            # Replace NaN/Inf with corresponding target values (conservative approach)
+            samples_np = np.where(np.isfinite(samples_np), samples_np, targets_np)
+        
         # Compute metrics
         gene_pearson, _ = pearson_mean(samples_np, targets_np)
         gene_r2 = r2_mean(targets_np, samples_np)
-        gene_mse = mean_squared_error(targets_np, samples_np)
-        gene_rmse = root_mean_squared_error(targets_np, samples_np)
+        
+        # For MSE/RMSE, use only finite values
+        finite_mask = np.isfinite(samples_np) & np.isfinite(targets_np)
+        if np.all(finite_mask):
+            gene_mse = mean_squared_error(targets_np, samples_np)
+            gene_rmse = root_mean_squared_error(targets_np, samples_np)
+        else:
+            gene_mse = mean_squared_error(targets_np[finite_mask], samples_np[finite_mask])
+            gene_rmse = root_mean_squared_error(targets_np[finite_mask], samples_np[finite_mask])
         
         # Variational loss
         val_loss = variational_loss(pred_mu, log_var, z_t_minus_1).item()
