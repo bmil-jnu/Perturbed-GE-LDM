@@ -128,6 +128,7 @@ class Trainer:
         save_dir: str = "./checkpoints",
         early_stop_patience: int = 30,
         metric: str = "avg_gene_pearson",
+        start_epoch: int = 0,
     ) -> Dict[str, float]:
         """
         Run the training loop.
@@ -139,6 +140,7 @@ class Trainer:
             save_dir: Directory to save checkpoints
             early_stop_patience: Patience for early stopping
             metric: Metric to monitor for early stopping
+            start_epoch: Epoch to start from (for resuming)
             
         Returns:
             Dictionary of final metrics
@@ -149,7 +151,7 @@ class Trainer:
         self._setup_callbacks(save_dir, early_stop_patience)
         
         # Training loop
-        for epoch in range(num_epochs):
+        for epoch in range(start_epoch, num_epochs):
             self.current_epoch = epoch
             
             # Set epoch for distributed sampler
@@ -174,13 +176,14 @@ class Trainer:
                     self.best_score = current_score
                     self.best_epoch = epoch
                     
-                    # Save checkpoint
+                    # Save checkpoint with early stopping state
                     self.checkpoint.save(
                         model=self.model,
                         optimizer=self.optimizer,
                         scheduler=self.scheduler,
                         epoch=epoch,
                         best_score=self.best_score,
+                        early_stop_count=self.early_stopping.counter,
                     )
                     
                     self.early_stopping.reset()
@@ -404,23 +407,74 @@ class Trainer:
             best_score=self.best_score,
         )
     
-    def load_checkpoint(self, path: str) -> None:
-        """Load model state from checkpoint."""
-        model, scaler, state = ModelFactory.load_checkpoint(
-            path,
-            device=self.device,
-            model=self.model.module if isinstance(self.model, DDP) else self.model
-        )
+    def load_checkpoint(
+        self,
+        path: str,
+        model: nn.Module = None,
+        optimizer: torch.optim.Optimizer = None,
+        scheduler: object = None,
+    ) -> int:
+        """Load model state from checkpoint.
         
-        if isinstance(self.model, DDP):
-            self.model.module.load_state_dict(model.state_dict())
-        else:
-            self.model.load_state_dict(model.state_dict())
+        Args:
+            path: Path to checkpoint file
+            model: Model to load weights into (optional)
+            optimizer: Optimizer to load state into (optional)
+            scheduler: Scheduler to load state into (optional)
+            
+        Returns:
+            The epoch to resume from
+        """
+        import random
+        import numpy as np
         
-        if state.get("optimizer"):
-            self.optimizer.load_state_dict(state["optimizer"])
-        if state.get("scheduler"):
-            self.scheduler.load_state_dict(state["scheduler"])
+        state = torch.load(path, map_location=self.device, weights_only=False)
         
+        # Get model to load into
+        target_model = model if model is not None else self.model
+        if isinstance(target_model, DDP):
+            target_model = target_model.module
+        
+        # Load model state
+        loaded_state_dict = state["state_dict"]
+        # Remove 'module.' prefix if present
+        for key in list(loaded_state_dict.keys()):
+            if key.startswith("module."):
+                loaded_state_dict[key[7:]] = loaded_state_dict.pop(key)
+        target_model.load_state_dict(loaded_state_dict)
+        
+        # Load optimizer
+        target_optimizer = optimizer if optimizer is not None else self.optimizer
+        if target_optimizer and state.get("optimizer"):
+            target_optimizer.load_state_dict(state["optimizer"])
+        
+        # Load scheduler
+        target_scheduler = scheduler if scheduler is not None else self.scheduler
+        if target_scheduler and state.get("scheduler"):
+            target_scheduler.load_state_dict(state["scheduler"])
+        
+        # Restore random state for reproducibility
+        if state.get("random_state"):
+            rs = state["random_state"]
+            if rs.get("torch") is not None:
+                torch.set_rng_state(rs["torch"])
+            if rs.get("cuda") is not None and torch.cuda.is_available():
+                torch.cuda.set_rng_state_all(rs["cuda"])
+            if rs.get("numpy") is not None:
+                np.random.set_state(rs["numpy"])
+            if rs.get("random") is not None:
+                random.setstate(rs["random"])
+        
+        # Restore training state
         self.current_epoch = state.get("epoch", 0)
         self.best_score = state.get("best_score", float("-inf"))
+        self.best_epoch = state.get("epoch", 0)
+        
+        # Restore early stopping state if available
+        if self.early_stopping is not None and state.get("early_stop_count") is not None:
+            self.early_stopping.counter = state["early_stop_count"]
+        
+        print(f"Loaded checkpoint from epoch {self.current_epoch}, best_score: {self.best_score:.4f}")
+        
+        # Return the next epoch to start from
+        return self.current_epoch + 1

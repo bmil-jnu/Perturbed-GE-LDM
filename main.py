@@ -105,6 +105,9 @@ def _add_training_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--parallel", action="store_true", help="Use distributed training")
     parser.add_argument("--world_size", type=int, default=None, help="Number of GPUs")
     parser.add_argument("--split_keys", type=str, nargs="+", help="Split keys for cross-validation")
+    parser.add_argument("--resume", action="store_true", help="Resume training from checkpoint")
+    parser.add_argument("--resume_checkpoint", type=str, help="Path to checkpoint to resume from")
+    parser.add_argument("--wandb_run_id", type=str, help="WandB run ID to resume logging")
 
 
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
@@ -140,6 +143,16 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         config.training.parallel = True
     if hasattr(args, 'split_keys') and args.split_keys:
         config.data.split_keys = args.split_keys
+    
+    # Resume settings
+    if hasattr(args, 'resume') and args.resume:
+        config.resume = True
+    else:
+        config.resume = getattr(config, 'resume', False)
+    if hasattr(args, 'resume_checkpoint') and args.resume_checkpoint:
+        config.resume_checkpoint = args.resume_checkpoint
+    if hasattr(args, 'wandb_run_id') and args.wandb_run_id:
+        config.wandb_run_id = args.wandb_run_id
     
     # Set mode
     config.mode = args.mode
@@ -191,12 +204,18 @@ def run_training_fold(
     
     # Initialize wandb
     if config.use_wandb and WANDB_AVAILABLE and is_main:
-        wandb.init(
-            project=config.wandb_project,
-            name=f"{split_key}_fold_{fold_idx}",
-            group=f"experiment_{config.experiment_name}",
-            config=config.to_dict(),
-        )
+        wandb_kwargs = {
+            "project": config.wandb_project,
+            "name": f"{split_key}_fold_{fold_idx}",
+            "group": f"experiment_{config.experiment_name}",
+            "config": config.to_dict(),
+        }
+        # Resume wandb run if specified
+        if getattr(config, 'resume', False) and getattr(config, 'wandb_run_id', None):
+            wandb_kwargs["id"] = config.wandb_run_id
+            wandb_kwargs["resume"] = "must"
+            logger.info(f"Resuming wandb run: {config.wandb_run_id}")
+        wandb.init(**wandb_kwargs)
     
     # Load data
     datamodule = LINCSDataModule(
@@ -275,6 +294,28 @@ def run_training_fold(
         evaluator=evaluator,
     )
     
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    if getattr(config, 'resume', False):
+        checkpoint_path = getattr(config, 'resume_checkpoint', None)
+        if checkpoint_path is None:
+            checkpoint_path = os.path.join(fold_save_dir, "model.pt")
+        
+        if os.path.exists(checkpoint_path):
+            if is_main:
+                logger.info(f"Resuming from checkpoint: {checkpoint_path}")
+            start_epoch = trainer.load_checkpoint(
+                checkpoint_path,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+            )
+            if is_main:
+                logger.info(f"Resuming from epoch {start_epoch}")
+        else:
+            if is_main:
+                logger.warning(f"Checkpoint not found: {checkpoint_path}. Starting from scratch.")
+    
     # Create data loaders
     train_loader = datamodule.train_dataloader(
         batch_size=config.training.batch_size,
@@ -299,6 +340,7 @@ def run_training_fold(
         save_dir=fold_save_dir,
         early_stop_patience=config.training.early_stop_patience,
         metric=config.training.metric,
+        start_epoch=start_epoch,
     )
     
     # Evaluate on test set
