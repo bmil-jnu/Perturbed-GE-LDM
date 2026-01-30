@@ -184,20 +184,40 @@ class ModelFactory:
                 loaded_state_dict[new_key] = loaded_state_dict.pop(key)
         
         if model is None:
-            # Need to create model from saved args
+            # Need to create model from saved args or config
             args = state.get("args")
-            if args is None:
-                raise ValueError("Cannot create model: no args in checkpoint")
+            config = state.get("config")
             
-            class ModelArgs:
-                pass
-            
-            model_args = ModelArgs()
-            for k, v in vars(args).items():
-                setattr(model_args, k, v)
-            model_args.device = device
-            
-            model = LatentDiffusionModel(model_args)
+            if args is not None:
+                # Legacy: use args
+                class ModelArgs:
+                    pass
+                
+                model_args = ModelArgs()
+                for k, v in vars(args).items():
+                    setattr(model_args, k, v)
+                model_args.device = device
+                
+                model = LatentDiffusionModel(model_args)
+            elif config is not None:
+                # New: use config dict
+                model_config = config.get("model", config)
+                
+                class ModelArgs:
+                    pass
+                
+                model_args = ModelArgs()
+                model_args.timesteps = model_config.get("timesteps", 1000)
+                model_args.beta_schedule = model_config.get("beta_schedule", "linear")
+                model_args.mode = model_config.get("mode", "pred_mu_v")
+                model_args.latent_dim = model_config.get("latent_dim", 256)
+                model_args.hidden_dim = model_config.get("hidden_dim", 1024)
+                model_args.ge_dim = model_config.get("ge_dim", 978)
+                model_args.device = device
+                
+                model = LatentDiffusionModel(model_args)
+            else:
+                raise ValueError("Cannot create model: no args or config in checkpoint")
         
         # Load weights
         model_state_dict = model.state_dict()
