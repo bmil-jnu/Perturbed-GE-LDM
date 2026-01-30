@@ -176,7 +176,7 @@ class Trainer:
                     self.best_score = current_score
                     self.best_epoch = epoch
                     
-                    # Save checkpoint with early stopping state
+                    # Save checkpoint with early stopping state and config
                     self.checkpoint.save(
                         model=self.model,
                         optimizer=self.optimizer,
@@ -184,6 +184,7 @@ class Trainer:
                         epoch=epoch,
                         best_score=self.best_score,
                         early_stop_count=self.early_stopping.counter,
+                        config=self.config.to_dict() if hasattr(self.config, 'to_dict') else vars(self.config),
                     )
                     
                     self.early_stopping.reset()
@@ -457,9 +458,16 @@ class Trainer:
         if state.get("random_state"):
             rs = state["random_state"]
             if rs.get("torch") is not None:
-                torch.set_rng_state(rs["torch"])
+                # Ensure RNG state is a CPU ByteTensor
+                torch_state = rs["torch"]
+                if isinstance(torch_state, torch.Tensor):
+                    torch_state = torch_state.cpu().to(torch.uint8)
+                torch.set_rng_state(torch_state)
             if rs.get("cuda") is not None and torch.cuda.is_available():
-                torch.cuda.set_rng_state_all(rs["cuda"])
+                cuda_states = rs["cuda"]
+                # Ensure each CUDA RNG state is on CPU
+                cuda_states = [s.cpu() if isinstance(s, torch.Tensor) else s for s in cuda_states]
+                torch.cuda.set_rng_state_all(cuda_states)
             if rs.get("numpy") is not None:
                 np.random.set_state(rs["numpy"])
             if rs.get("random") is not None:

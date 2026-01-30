@@ -348,14 +348,17 @@ def run_training_fold(
     
     test_metrics = {}
     if is_main:
-        # Load best model
+        # Load best model weights into existing model
         best_model_path = os.path.join(fold_save_dir, "model.pt")
         if os.path.exists(best_model_path):
-            model, _, _ = ModelFactory.load_checkpoint(
+            # Get the underlying model (unwrap DDP if needed)
+            model_to_load = model.module if hasattr(model, 'module') else model
+            model_to_load, _, _ = ModelFactory.load_checkpoint(
                 best_model_path,
                 device=device,
+                model=model_to_load,  # Pass existing model to load weights into
             )
-            evaluator.model = model
+            evaluator.model = model_to_load
         
         test_metrics = evaluator.evaluate(test_loader)
         
